@@ -122,6 +122,62 @@ void stop_and_close_uv_loop(uv_loop_t* loop) {
 
 bool g_is_initialized = false;
 
+bool IsPackagedApp() {
+  base::FilePath exe_path;
+  base::PathService::Get(base::FILE_EXE, &exe_path);
+  base::FilePath::StringType base_name =
+      base::ToLowerASCII(exe_path.BaseName().value());
+
+#if defined(OS_WIN)
+  return base_name != FILE_PATH_LITERAL("electron.exe");
+#else
+  return base_name != FILE_PATH_LITERAL("electron");
+#endif
+}
+
+// Initialize NODE_OPTIONS to pass to Node.js
+void SetNodeOptions(base::Environment* env) {
+  // Options that are unilaterally disallowed
+  const std::set<std::string> disallowed = {
+      "--openssl-config", "--use-bundled-ca", "--use-openssl-ca",
+      "--force-fips", "--enable-fips"};
+
+  // Subset of options allowed in packaged apps
+  const std::set<std::string> allowed_in_packaged = {"--max-http-header-size",
+                                                     "--http-parser"};
+
+  if (env->HasVar("NODE_OPTIONS")) {
+    std::string options;
+    env->GetVar("NODE_OPTIONS", &options);
+    std::vector<std::string> parts = base::SplitString(
+        options, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+
+    bool is_packaged_app = IsPackagedApp();
+
+    for (const auto& part : parts) {
+      // Strip off values passed to individual NODE_OPTIONs
+      std::string option = part.substr(0, part.find("="));
+
+      if (is_packaged_app &&
+          allowed_in_packaged.find(option) == allowed_in_packaged.end()) {
+        // Explicitly disallow majority of NODE_OPTIONS in packaged apps
+        LOG(ERROR) << "Most NODE_OPTIONs are not supported in packaged apps."
+                   << " See documentation for more details.";
+        options.erase(options.find(option), part.length());
+      } else if (disallowed.find(option) != disallowed.end()) {
+        // Remove NODE_OPTIONS specifically disallowed for use in Node.js
+        // through Electron owing to constraints like BoringSSL.
+        LOG(ERROR) << "The NODE_OPTION " << option
+                   << " is not supported in Electron";
+        options.erase(options.find(option), part.length());
+      }
+    }
+
+    // overwrite new NODE_OPTIONS without unsupported variables
+    env->SetVar("NODE_OPTIONS", options);
+  }
+}
+
 }  // namespace
 
 namespace electron {
